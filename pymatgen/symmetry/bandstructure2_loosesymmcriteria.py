@@ -10,17 +10,18 @@ from math import e
 from scipy.linalg import sqrtm
 from warnings import warn
 from pymatgen.core.operations import SymmOp, MagSymmOp
+from pymatgen.core.structure import Structure
 from pymatgen.electronic_structure.plotter import plot_wigner_seitz
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 from pymatgen.symmetry.bz_labels import LABELS, LABEL_POINTS
-
+from monty.json import MSONable
 """
 Created on July 3, 2018
 
 @author: K Latimer
 """
 
-class HighSymmKpath2(object):
+class HighSymmKpath2(MSONable):
     """
     This class looks for a path along high symmetry lines in the
     Brillouin zone.
@@ -98,11 +99,15 @@ class HighSymmKpath2(object):
 
         self._rec_lattice = self._struct.lattice.reciprocal_lattice
         self._atol = atol
-        if magmom_axis is None:
+        if has_magmoms and magmom_axis is None:
             magmom_axis = np.array([0, 0, 1])
             axis_specified = False
-        self._kpath = self._get_kpath(has_magmoms, magmom_axis, axis_specified,
-                                        system_is_tri, symprec, angle_tolerance, atol)
+        else:
+            axis_specified = True
+        self._has_magmoms = has_magmoms
+        self._magmom_axis = magmom_axis
+        self._system_is_tri = system_is_tri
+        self._kpath = self._get_kpath(axis_specified, symprec, angle_tolerance, atol)
         
     @property
     def structure(self):
@@ -244,7 +249,7 @@ class HighSymmKpath2(object):
             ax.text(pcart[0], pcart[1], pcart[2], key)
 
         return fig, ax
-
+        
     def get_label(self, point, atol, coords_are_cartesian=False):
         """
         Returns: 
@@ -268,9 +273,83 @@ class HighSymmKpath2(object):
                     ' and ' + self._key_points_labels[tup[1]])
 
         return ('Not equivalent to special points or special lines to within given precision')
+
+    def as_dict(self):
+        """ 
+        Dictionary representation of HighSymmKpath2 object
+        """
+        struct_dict = self._struct.as_dict()
+        del struct_dict["@module"]
+        del struct_dict["@class"]
+
+        latt_dict = self._rec_lattice.as_dict()
+        del latt_dict["@module"]
+        del latt_dict["@class"]
+
+        d = {"@module": self.__class__.__module__,
+             "@class": self.__class__.__name__,
+             "structure": struct_dict,
+             "reciprocal_lattice": latt_dict,
+             "has_magmoms": self._has_magmoms,
+             "magmom_axis": self._magmom_axis,
+             "system_is_tri": self._system_is_tri,
+             "mag_type": self._mag_type, 
+             "kpoints": self._kpath['kpoints'], 
+             "path": self._kpath['path']}
+
+        return d
+
+    @classmethod
+    def from_dict(cls, d):
+        """
+        Constructs a HighSymmKpath2 object from input dictionary.
+        I am not sure how useful this functionality is for the given
+        application since some class attributes are generated on the 
+        fly during construction via the _get_kpath() method, so 
+        this function just initializes a class instance...seems kind
+        of redundant but required to inherit from MSONable.
+
+        Args:d
+            d (dict): A dictionary containing minimally the key 'structure',
+                with value a serialized Structure object. Can also contain
+                keys for the optional construction arguments has_magmoms, 
+                magmom_axis, system_is_tri, symprec, angle_tolerance, atol.
+        """
+        struct = Structure.from_dict(d['structure'])
+        #I know this is terrible coding I'm so sorry
+        if 'has_magmoms' in d:
+            has_magmoms = d['has_magmoms']
+        else:
+            has_magmoms = False
+
+        if 'magmom_axis' in d:
+            magmom_axis = d['magmom_axis']
+        else:
+            magmom_axis = None
+
+        if 'system_is_tri' in d:
+            system_is_tri = d['system_is_tri']
+        else:
+            system_is_tri = True
+
+        if 'symprec' in d:
+            symprec = d['symprec']
+        else:
+            symprec = 0.01
+
+        if 'angle_tolerance' in d:
+            angle_tolerance = d['angle_tolerance']
+        else:
+            angle_tolerance = 5
+
+        if 'atol' in d:
+            atol = d['atol']
+        else:
+            atol = 1e-3
+
+        return cls(struct, has_magmoms, magmom_axis, system_is_tri, symprec, angle_tolerance, atol)
         
-    def _get_kpath(self, has_magmoms, magmom_axis, axis_specified, 
-                        system_is_tri, symprec, angle_tolerance, atol):
+    def _get_kpath(self, axis_specified, symprec, angle_tolerance, atol):
         decimals = ceil(-1*np.log10(atol)) - 1
         
         ID = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
@@ -283,12 +362,12 @@ class HighSymmKpath2(object):
         W = self._rec_lattice.matrix.T #fractional reciprocal space to cartesian reciprocal space
         A = np.dot(np.linalg.inv(W), V) #fractional real space to fractional reciprocal space
         
-        if has_magmoms:
+        if self._has_magmoms:
             grey_struct = self._struct.copy()
             grey_struct.remove_site_property('magmom')
             sga = SpacegroupAnalyzer(grey_struct, symprec=symprec, angle_tolerance=angle_tolerance)
             grey_ops = sga.get_symmetry_operations()
-            self._struct = self._convert_all_magmoms_to_vectors(magmom_axis, axis_specified)
+            self._struct = self._convert_all_magmoms_to_vectors(axis_specified)
             mag_ops = self._get_magnetic_symmetry_operations(self._struct, grey_ops, atol)
 
             D = [SymmOp.from_rotation_and_translation(rotation_matrix=op.rotation_matrix,
@@ -301,7 +380,7 @@ class HighSymmKpath2(object):
                 fD = D
                 D = []
 
-            if len(fD) == 0 or not system_is_tri: # no operations contain time reversal; type 1
+            if len(fD) == 0 or not self._system_is_tri: # no operations contain time reversal; type 1
                 self._mag_type = '1'
                 isomorphic_point_group = [d.rotation_matrix for d in D]
                 recip_point_group = self._get_reciprocal_point_group(isomorphic_point_group, ID, A)
@@ -318,13 +397,13 @@ class HighSymmKpath2(object):
         else:
             self._mag_type = '0'
             if 'magmom' in self._struct.site_properties:
-                warn('The parameter has_magmoms is False, but site_properties contains the key magmom.' 
+                warn('The parameter self._has_magmoms is False, but site_properties contains the key magmom.' 
                     'This property will be removed and could result in different symmetry operations.')
                 self._struct.remove_site_property('magmom')
             sga = SpacegroupAnalyzer(self._struct)
             ops = sga.get_symmetry_operations()
             isomorphic_point_group = [op.rotation_matrix for op in ops]
-            if system_is_tri:
+            if self._system_is_tri:
                 recip_point_group =  self._get_reciprocal_point_group(isomorphic_point_group, PAR, A)
             else:
                 recip_point_group =  self._get_reciprocal_point_group(isomorphic_point_group, ID, A)
@@ -593,7 +672,7 @@ class HighSymmKpath2(object):
 
         ### 9: Choose remaining unconnected key points for k-path. The ones that remain are   ###
         ### those with inversion symmetry. Connect them to gamma (this is arbitrary but there ###
-        ### needs to be some connection for a path to exist).                                 ###
+        ### needs to be some connection for a path to exist).                                 ###                                                ###
 
         unconnected = []
 
@@ -699,9 +778,9 @@ class HighSymmKpath2(object):
 
         return {'kpoints': kpoints, 'path': path}
 
-    def _convert_all_magmoms_to_vectors(self, magmom_axis, axis_specified):
+    def _convert_all_magmoms_to_vectors(self, axis_specified):
         struct = self._struct.copy()
-        magmom_axis = np.array(magmom_axis)
+        self._magmom_axis = np.array(self._magmom_axis)
         if not 'magmom' in struct.site_properties:
             warn('The \'magmom\' property is not set in the structure\'s site properties.'
                   'All magnetic moments are being set to zero.')
@@ -721,10 +800,10 @@ class HighSymmKpath2(object):
                 new_magmoms.append(np.array(magmom))
             else:
                 found_scalar = True
-                new_magmoms.append(magmom*magmom_axis)
+                new_magmoms.append(magmom*self._magmom_axis)
 
         if found_scalar and not axis_specified:
-            warn('At least one magmom had a scalar value and magmom_axis was not specified.'
+            warn('At least one magmom had a scalar value and self._magmom_axis was not specified.'
                 'Defaulted to z+ spinor.')
 
         struct.remove_site_property('magmom')
