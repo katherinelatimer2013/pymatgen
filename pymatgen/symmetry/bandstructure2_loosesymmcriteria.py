@@ -288,7 +288,7 @@ class HighSymmKpath2(object):
             grey_struct.remove_site_property('magmom')
             sga = SpacegroupAnalyzer(grey_struct, symprec=symprec, angle_tolerance=angle_tolerance)
             grey_ops = sga.get_symmetry_operations()
-            self._struct = self._convert_all_magmoms_to_vectors(magmom_axis)
+            self._struct = self._convert_all_magmoms_to_vectors(magmom_axis, axis_specified)
             mag_ops = self._get_magnetic_symmetry_operations(self._struct, grey_ops, atol)
 
             D = [SymmOp.from_rotation_and_translation(rotation_matrix=op.rotation_matrix,
@@ -699,9 +699,9 @@ class HighSymmKpath2(object):
 
         return {'kpoints': kpoints, 'path': path}
 
-    def _convert_all_magmoms_to_vectors(self, magmom_axis):
+    def _convert_all_magmoms_to_vectors(self, magmom_axis, axis_specified):
         struct = self._struct.copy()
-        magmom_axis = np.array(magmom_axis, axis_specified)
+        magmom_axis = np.array(magmom_axis)
         if not 'magmom' in struct.site_properties:
             warn('The \'magmom\' property is not set in the structure\'s site properties.'
                   'All magnetic moments are being set to zero.')
